@@ -1,0 +1,21 @@
+DATA_DIR = "data"
+
+# --- Twitter/X Authentication ---
+# IMPORTANT: Get this from your browser's developer tools
+# (Application -> Cookies -> https://twitter.com -> auth_token)
+AUTH_TOKEN_COOKIE = "xxx"
+
+# --- Users to Track ---
+# A list of Twitter usernames (without the '@')
+USERS_TO_TRACK = [
+    "_dr3f",
+    # "add more here",
+]
+
+# --- Alerting ---
+DISCORD_WEBHOOK_URL = "xxx"
+
+# --- Settings ---
+# Time to wait between checks (in seconds)
+# for example 60 * 15 = 15 minutes
+SCRAPE_INTERVAL = 60 * 20 # 20 minutes

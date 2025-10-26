@@ -8,7 +8,7 @@ AUTH_TOKEN_COOKIE = "xxx"
 # --- Users to Track ---
 # A list of Twitter usernames (without the '@')
 USERS_TO_TRACK = [
-    "_dr3f",
+    "_d3rf",
     # "add more here",
 ]
 

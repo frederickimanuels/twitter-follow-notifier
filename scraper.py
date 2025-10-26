@@ -13,6 +13,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 # --- Custom Exceptions ---
 class AuthException(Exception):
@@ -88,7 +89,7 @@ def get_following_list(driver, username):
     following_set = set()
     last_height = driver.execute_script("return document.body.scrollHeight")
     scroll_attempts = 0
-    max_scroll_attempts = 5 # Increased to 5 for more reliability
+    max_scroll_attempts = 3
 
     while True:
         # Find all user cells currently visible
@@ -130,18 +131,87 @@ def get_following_list(driver, username):
     print(f"Scrape complete for {username}. Found {len(following_set)} following.")
     return following_set
 
-def send_discord_alert(username, new_follows_list):
-    """Sends a formatted alert to the Discord webhook."""
+def get_profile_details(driver, username):
+    """
+    Visits a user's profile page and scrapes their details.
+    Returns a dictionary.
+    """
+    if not username:
+        return None
+        
+    username_clean = username.lstrip('@')
+    print(f"Scraping profile details for @{username_clean}...")
+    driver.get(f"https://x.com/{username_clean}")
+    
+    # Default values
+    details = {
+        "description": "No description found.",
+        "join_date": "Join date not found.",
+        "following_count": "N/A Following",
+        "followers_count": "N/A Followers"
+    }
+
+    try:
+        # 1. Wait for the main profile header to load (we'll use the 'following' link)
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href$="/following"]'))
+        )
+        
+        # 2. Scrape Description
+        try:
+            desc_el = driver.find_element(By.CSS_SELECTOR, '[data-testid="UserDescription"]')
+            details["description"] = desc_el.text if desc_el.text else "No description found."
+        except Exception:
+            pass # Keep default
+
+        # 3. Scrape Join Date
+        try:
+            join_el = driver.find_element(By.CSS_SELECTOR, '[data-testid="UserJoinDate"]')
+            # Clean the emoji and "Joined " text
+            details["join_date"] = join_el.text.replace('🗓️', '').replace('Joined ', '').strip()
+        except Exception:
+            pass # Keep default
+
+        # 4. Scrape Following Count
+        try:
+            # Selects the <span> inside the <a> link that ends with '/following'
+            following_el = driver.find_element(By.CSS_SELECTOR, 'a[href$="/following"] span')
+            details["following_count"] = following_el.text
+        except Exception:
+            pass # Keep default
+
+        # 5. Scrape Followers Count
+        try:
+            # Selects the <span> inside the <a> link that ends with '/followers'
+            followers_el = driver.find_element(By.CSS_SELECTOR, 'a[href$="/verified_followers"] span')
+            details["followers_count"] = followers_el.text
+        except Exception:
+            pass # Keep default
+            
+        return details
+        
+    except TimeoutException:
+        print(f"Could not load profile for @{username_clean} (Timeout).")
+        return details # Return default details
+    except Exception as e:
+        print(f"Error scraping profile for {username}: {e}")
+        return details # Return default details
+
+def send_discord_alert(driver, tracked_username, new_follows_list):
+    """
+    Sends a formatted alert to the Discord webhook, including full profile details.
+    """
     if not config.DISCORD_WEBHOOK_URL or "YOUR_DISCORD_WEBHOOK_URL" in config.DISCORD_WEBHOOK_URL:
         print("Discord webhook URL not set. Skipping alert.")
         return
 
-    print(f"Sending Discord alert for {username}...")
-    message_content = f"**🚨 New Follows Detected for @{username}**\n"
-    message_content += "\n".join(new_follows_list)
+    print(f"Building detailed Discord alert for {tracked_username}...")
+    
+    message_parts = []
+    message_parts.append(f"**🚨 New Follows Detected for @{tracked_username}**\n")
 
     payload = {
-        "content": message_content
+        "content": "".join(message_parts)
     }
 
     try:
@@ -152,6 +222,52 @@ def send_discord_alert(username, new_follows_list):
             print(f"Error sending Discord alert: {response.status_code} - {response.text}")
     except Exception as e:
         print(f"Exception while sending Discord alert: {e}")
+
+    message_parts = []
+
+    for new_user in new_follows_list:
+        # Scrape the profile details for each new follow
+        details = get_profile_details(driver, new_user)
+        
+        if not details:
+            message_parts.append(f"**{new_user}**\n> Error scraping profile.\n")
+            continue
+        
+        # Format the description with Discord's "quote" formatting
+        # formatted_description = "\n> ".join(details['description'].split('\n'))
+        
+        # Add this user's details to the message
+        message_parts.append(f"[**{new_user}**](https://x.com/{new_user[1:]})")
+        # Add the new stats line
+        message_parts.append(f"> **{details['following_count']} Following** | **{details['followers_count']} Followers** | **Joined {details['join_date']}**\n")
+        # # Add the description
+        # message_parts.append(f"> {formatted_description}\n")
+        
+        # CRITICAL: Wait a bit before scraping the next profile
+        time.sleep(random.randint(2, 5)) 
+
+        # Combine all parts into one message
+        final_message = "\n".join(message_parts)
+
+        # Handle Discord's 2000-character limit
+        if len(final_message) > 2000:
+            print("Message too long for Discord. Truncating.")
+            final_message = final_message[:1950] + "\n... (message truncated)"
+
+        payload = {
+            "content": final_message
+        }
+
+        try:
+            response = requests.post(config.DISCORD_WEBHOOK_URL, json=payload)
+            if response.status_code == 204:
+                print("Discord alert sent successfully.")
+            else:
+                print(f"Error sending Discord alert: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"Exception while sending Discord alert: {e}")
+            
+        message_parts = []
 
 def send_error_alert(error_message):
     """Sends a formatted ERROR alert to the Discord webhook."""
@@ -258,7 +374,7 @@ def main():
                     # 2c. Alert if there are new follows
                     if new_follows:
                         print(f"!!! FOUND {len(new_follows)} NEW FOLLOWS for {user}: {new_follows} !!!")
-                        send_discord_alert(user, new_follows)
+                        send_discord_alert(driver, user, new_follows)
                     else:
                         print(f"No new follows detected for {user}.")
                 
